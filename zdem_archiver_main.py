@@ -26,8 +26,8 @@ def format_size(size_in_bytes):
 # ---------------------------------------------------------
 def should_delete_file(file_path, base_path):
     """
-    判断单个文件是否需要被删除
-    返回 True (需删除) 或 False (需保留)
+    判断单个文件是否需要被删除。
+    返回命中的规则名称 (str) 或 None (不删除)。
     """
     try:
         rel_path = file_path.relative_to(base_path)
@@ -37,35 +37,49 @@ def should_delete_file(file_path, base_path):
 
         # [1] 白名单：绝对保护核心文件 (优先匹配)
         if name.lower() in ['ini_xyr.dat']:
-            return False
+            return None
         if suffix in ['.py', '.sh', '.md']:
-            return False
+            return None
 
         # [2] 黑名单：清理 DATA 文件夹内的所有文件
         # 只要文件的任意上级目录包含 'data' (忽略大小写)，即判定为数据文件
         if any(p.lower() == 'data' for p in parts[:-1]):
-            return True
+            return 'DATA 目录清理'
 
         # [3] 黑名单：清理各类日志和输出冗余
         if suffix in ['.log', '.err', '.error', '.out']:
-            return True
+            return '日志/错误文件'
 
         # [4] 精细规则：处理 .dat 文件
         if suffix == '.dat':
             # 匹配带时间步的文件名，例如 result_10000.dat, output2000.dat
             # 正则解释: 匹配下划线+数字+.dat，或者直接数字+.dat结尾
             if re.search(r'_\d+\.dat$', name.lower()) or re.search(r'\d+\.dat$', name.lower()):
-                return True
+                return '时间步 .dat'
             else:
                 # 不带时间步的 .dat 予以保留
-                return False
+                return None
 
-        # [5] 默认处理：如果都不匹配，为了安全起见，默认保留
-        return False
+        # [5] 图像文件清理规则 (仅针对常见图像格式)
+        if suffix in ['.jpg', '.jpeg', '.png', '.bmp']:
+            stem = file_path.stem.lower()
+            # [5a] 莫尔圆输出图：文件名以 mohr 开头
+            if stem.startswith('mohr'):
+                return '莫尔圆图片'
+            # [5b] 应力-应变输出图：文件名以 strain_stress 开头
+            if stem.startswith('strain_stress'):
+                return '应力-应变图片'
+            # [5c] 时间步快照图：文件名（去掉括号后）含有连续 5 位以上数字序列
+            # 匹配形如 all_0000600997、all_0000600997 (2) 这类文件名
+            if re.search(r'\d{5,}', stem):
+                return '时间步图片'
+
+        # [6] 默认处理：如果都不匹配，为了安全起见，默认保留
+        return None
 
     except Exception:
         # 如果解析路径发生异常，保守起见不删除
-        return False
+        return None
 
 # ---------------------------------------------------------
 # 线程 1：扫描预演线程 (Dry-run Scanner)
@@ -73,7 +87,7 @@ def should_delete_file(file_path, base_path):
 class ScannerThread(QThread):
     progress_update = pyqtSignal(int)
     log_update = pyqtSignal(str)
-    scan_finished = pyqtSignal(list, int) # 返回 (待删除文件路径列表, 待释放总字节数)
+    scan_finished = pyqtSignal(object) # 传递结果字典  [用 object 避免 int32 溢出]
 
     def __init__(self, target_dir):
         super().__init__()
@@ -88,7 +102,11 @@ class ScannerThread(QThread):
         
         if total_files == 0:
             self.log_update.emit("[警告] 目标目录为空或不存在。")
-            self.scan_finished.emit([], 0)
+            self.scan_finished.emit({
+                'files_to_delete': [],
+                'total_freed_bytes': 0,
+                'rule_stats': {},
+            })
             return
 
         self.log_update.emit(f"[系统] 发现总计 {total_files} 个文件，开始执行规则匹配...")
@@ -96,6 +114,8 @@ class ScannerThread(QThread):
         files_to_delete = []
         total_freed_bytes = 0
         processed_files = 0
+        # 按规则分类统计：{ 规则名: {'count': 文件数, 'bytes': 字节数} }
+        rule_stats = {}
         
         # 为了防止 UI 频繁刷新导致卡顿，限制刷新频率
         last_update_time = time.time()
@@ -107,13 +127,20 @@ class ScannerThread(QThread):
                 file_path = root_path / file
                 processed_files += 1
 
-                # 规则判断
-                if should_delete_file(file_path, self.target_dir):
+                # 规则判断：返回规则名或 None
+                rule = should_delete_file(file_path, self.target_dir)
+                if rule:
                     files_to_delete.append(file_path)
                     try:
-                        total_freed_bytes += file_path.stat().st_size
+                        fsize = file_path.stat().st_size
                     except OSError:
-                        pass # 忽略无法读取大小的文件
+                        fsize = 0
+                    total_freed_bytes += fsize
+                    # 按规则名累加统计
+                    if rule not in rule_stats:
+                        rule_stats[rule] = {'count': 0, 'bytes': 0}
+                    rule_stats[rule]['count'] += 1
+                    rule_stats[rule]['bytes'] += fsize
 
                 # 控制进度条更新频率 (每 0.1 秒刷新一次)
                 current_time = time.time()
@@ -123,7 +150,11 @@ class ScannerThread(QThread):
                     last_update_time = current_time
 
         self.log_update.emit("[成功] 目录扫描与预演完成。")
-        self.scan_finished.emit(files_to_delete, total_freed_bytes)
+        self.scan_finished.emit({
+            'files_to_delete': files_to_delete,
+            'total_freed_bytes': total_freed_bytes,
+            'rule_stats': rule_stats,
+        })
 
 # ---------------------------------------------------------
 # 线程 2：物理清理线程 (Cleaner)
@@ -131,7 +162,7 @@ class ScannerThread(QThread):
 class CleanerThread(QThread):
     progress_update = pyqtSignal(int)
     log_update = pyqtSignal(str)
-    clean_finished = pyqtSignal(int, int) # 返回 (成功删除数, 失败数)
+    clean_finished = pyqtSignal(object, object) # 返回 (成功删除数, 失败数)  [用 object 避免 int32 溢出]
 
     def __init__(self, files_to_delete, target_dir):
         super().__init__()
@@ -319,14 +350,37 @@ class ZDEMArchiverWindow(QMainWindow):
         self.scanner_thread.scan_finished.connect(self.on_scan_finished)
         self.scanner_thread.start()
 
-    def on_scan_finished(self, files_to_delete, total_freed_bytes):
+    def on_scan_finished(self, result):
+        files_to_delete = result['files_to_delete']
+        total_freed_bytes = result['total_freed_bytes']
+        rule_stats = result['rule_stats']
+
         self.files_to_delete_cache = files_to_delete
         
-        self.append_log("-" * 50)
-        self.append_log("预演结果汇总：")
-        self.append_log(f"  - 将删除文件数: {len(files_to_delete)} 个")
-        self.append_log(f"  - 预计释放空间: <font color='#10B981'><b>{format_size(total_freed_bytes)}</b></font>")
-        self.append_log("-" * 50)
+        self.append_log("━" * 50)
+        self.append_log("<b>预演结果汇总：</b>")
+        self.append_log("")
+
+        # 按规则分类汇总展示
+        if rule_stats:
+            # 按字节数降序排列，最占空间的规则排在最前面
+            sorted_rules = sorted(rule_stats.items(), key=lambda x: x[1]['bytes'], reverse=True)
+            for rule_name, stats in sorted_rules:
+                count = stats['count']
+                size_str = format_size(stats['bytes'])
+                self.append_log(
+                    f"  <font color='#60A5FA'>▸</font> "
+                    f"<b>{rule_name}</b>　→　"
+                    f"{count} 个文件　|　"
+                    f"<font color='#F87171'>{size_str}</font>"
+                )
+
+        self.append_log("")
+        self.append_log(
+            f"  <b>总计: {len(files_to_delete)} 个文件　|　"
+            f"释放 <font color='#10B981'>{format_size(total_freed_bytes)}</font></b>"
+        )
+        self.append_log("━" * 50)
         
         self.dry_run_btn.setEnabled(True)
         self.browse_btn.setEnabled(True)
