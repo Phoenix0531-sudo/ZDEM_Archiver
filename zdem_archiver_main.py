@@ -6,7 +6,8 @@ import shutil
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QTextBrowser, QProgressBar, QCheckBox, QFileDialog)
+                             QTextBrowser, QProgressBar, QCheckBox, QFileDialog,
+                             QDialog, QListWidget, QListWidgetItem, QAbstractItemView)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
 
@@ -41,14 +42,42 @@ def should_delete_file(file_path, base_path):
         if suffix in ['.py', '.sh', '.md']:
             return None
 
-        # [2] 黑名单：清理 DATA 文件夹内的所有文件
-        # 只要文件的任意上级目录包含 'data' (忽略大小写)，即判定为数据文件
-        if any(p.lower() == 'data' for p in parts[:-1]):
-            return 'DATA 目录清理'
+        # [1b] IDE 和编译缓存目录 — 整个目录都是垃圾
+        ide_junk_dirs = {'__pycache__', '.idea', '.vscode', '.cursor', '.superdesign'}
+        if any(p in ide_junk_dirs for p in parts):
+            return 'IDE/编译缓存'
+
+        # [2] 黑名单：清理包含特定关键字的目录或文件名
+        # 匹配关键字：data, datass, result (忽略大小写)
+        # 只要文件的任意上级目录包含这些关键字，或者文件名本身匹配，即判定为清理对象
+        deletion_keywords = ['data', 'datass', 'result']
+        
+        # 检查目录路径
+        if any(any(kw in p.lower() for kw in deletion_keywords) for p in parts[:-1]):
+            return '数据/结果目录清理'
+            
+        # 检查文件名本身 (包含针对 datass, result 等特定名称的精确或模糊匹配)
+        if any(kw in name.lower() for kw in deletion_keywords):
+            # 排除掉那些在白名单中已经处理过的情况
+            return '数据/结果冗余文件'
 
         # [3] 黑名单：清理各类日志和输出冗余
         if suffix in ['.log', '.err', '.error', '.out']:
             return '日志/错误文件'
+            
+        # [3b] GMT 配置文件清理
+        if name.lower() in ['gmt.conf', 'gmt.history']:
+            return 'GMT 配置文件'
+
+        # [3c] 系统垃圾和无用文件
+        if name.lower() in ['thumbs.db', 'desktop.ini', '.ds_store']:
+            return '系统缓存文件'
+        if suffix in ['.pyc', '.lnk', '.mdc', '.css']:
+            return '无用缓存/配置'
+
+        # [3d] GIF 动画文件 — 可重新生成的后处理产物
+        if suffix == '.gif':
+            return 'GIF 动画'
 
         # [4] 精细规则：处理 .dat 文件
         if suffix == '.dat':
@@ -201,16 +230,27 @@ class CleanerThread(QThread):
                 self.progress_update.emit(progress_pct)
                 last_update_time = current_time
 
-        # --- 新增逻辑：彻底铲除 DATA 文件夹及其子目录结构 ---
-        self.log_update.emit("[系统] 正在清理 DATA 目录结构...")
+        # --- 彻底铲除数据/结果文件夹 + IDE 缓存目录 ---
+        self.log_update.emit("[系统] 正在清理数据与结果目录结构...")
         try:
+            # 子串匹配：只要文件夹名包含关键字就清理
+            dir_keywords = ['data', 'datass', 'result']
+            # 精确匹配：IDE/编译缓存目录名完全一致才清理
+            ide_junk_dirs = {'__pycache__', '.idea', '.vscode', '.cursor', '.superdesign'}
             # 采用自下而上的遍历 (topdown=False) 确保能干净地删除嵌套文件夹
             for root, dirs, files in os.walk(self.target_dir, topdown=False):
                 for d in dirs:
-                    if d.lower() == 'data':
+                    d_lower = d.lower()
+                    should_remove = False
+                    # 数据/结果目录：子串匹配
+                    if any(kw in d_lower for kw in dir_keywords):
+                        should_remove = True
+                    # IDE 缓存目录：精确匹配
+                    if d in ide_junk_dirs:
+                        should_remove = True
+                    if should_remove:
                         dir_path = Path(root) / d
                         try:
-                            # 强制删除整个 DATA 文件夹
                             shutil.rmtree(dir_path)
                         except Exception:
                             pass
@@ -218,6 +258,173 @@ class CleanerThread(QThread):
             pass
 
         self.clean_finished.emit(success_count, fail_count)
+
+# ---------------------------------------------------------
+# 空文件夹扫描工具
+# ---------------------------------------------------------
+def find_empty_dirs(root_path):
+    """
+    递归扫描空文件夹（从底部往上扫描）。
+    如果一个目录下既没有文件，子目录也全是空的，则判定为空文件夹。
+    返回空文件夹路径列表，按路径深度降序排列（最深的在前）。
+    """
+    empty_dirs = []
+    root_path = Path(root_path)
+
+    # 自底向上遍历，确保先发现最深层的空目录
+    for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
+        current = Path(dirpath)
+        # 跳过根目录本身
+        if current == root_path:
+            continue
+        # 判断是否为空：没有文件，且没有子目录（或子目录都已经被记录为空）
+        try:
+            remaining = list(current.iterdir())
+            if not remaining:
+                empty_dirs.append(current)
+        except (PermissionError, OSError):
+            pass
+
+    # 按路径深度降序（最深的排前面，方便从里往外删）
+    empty_dirs.sort(key=lambda p: len(p.parts), reverse=True)
+    return empty_dirs
+
+
+# ---------------------------------------------------------
+# 空文件夹清理对话框
+# ---------------------------------------------------------
+class EmptyFolderDialog(QDialog):
+    """可勾选的空文件夹列表对话框"""
+
+    def __init__(self, empty_dirs, base_path, parent=None):
+        super().__init__(parent)
+        self.empty_dirs = empty_dirs
+        self.base_path = Path(base_path)
+        self.setWindowTitle('空文件夹清理')
+        self.resize(600, 420)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        # 标题
+        title = QLabel(f"发现 {len(self.empty_dirs)} 个空文件夹")
+        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title.setStyleSheet("color: #1E293B;")
+        layout.addWidget(title)
+
+        hint = QLabel("勾选你需要删除的空文件夹，取消勾选的将被保留：")
+        hint.setFont(QFont("Segoe UI", 9))
+        hint.setStyleSheet("color: #64748B;")
+        layout.addWidget(hint)
+
+        # 可勾选列表
+        self.list_widget = QListWidget()
+        self.list_widget.setFont(QFont("Consolas", 9))
+        self.list_widget.setSelectionMode(QAbstractItemView.NoSelection)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #F8FAFC;
+                border: 1px solid #E2E8F0;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QListWidget::item {
+                padding: 4px 2px;
+                border-bottom: 1px solid #F1F5F9;
+            }
+        """)
+
+        for d in self.empty_dirs:
+            try:
+                rel = d.relative_to(self.base_path)
+            except ValueError:
+                rel = d
+            item = QListWidgetItem(str(rel))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)  # 默认全选
+            item.setData(Qt.UserRole, str(d))  # 存储绝对路径
+            self.list_widget.addItem(item)
+
+        layout.addWidget(self.list_widget)
+
+        # 全选/全不选 按钮行
+        select_layout = QHBoxLayout()
+        select_all_btn = QPushButton("全选")
+        select_all_btn.setFixedSize(70, 28)
+        select_all_btn.setCursor(Qt.PointingHandCursor)
+        select_all_btn.clicked.connect(self._select_all)
+        select_all_btn.setStyleSheet("""
+            QPushButton { background-color: #F1F5F9; color: #475569;
+                          border: 1px solid #E2E8F0; border-radius: 6px;
+                          font-size: 12px; }
+            QPushButton:hover { background-color: #E2E8F0; }
+        """)
+
+        deselect_all_btn = QPushButton("全不选")
+        deselect_all_btn.setFixedSize(70, 28)
+        deselect_all_btn.setCursor(Qt.PointingHandCursor)
+        deselect_all_btn.clicked.connect(self._deselect_all)
+        deselect_all_btn.setStyleSheet(select_all_btn.styleSheet())
+
+        select_layout.addWidget(select_all_btn)
+        select_layout.addWidget(deselect_all_btn)
+        select_layout.addStretch()
+        layout.addLayout(select_layout)
+
+        # 确认/取消 按钮行
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(14)
+
+        cancel_btn = QPushButton("跳过")
+        cancel_btn.setFixedHeight(36)
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet("""
+            QPushButton { background-color: #F1F5F9; color: #475569;
+                          border: 1px solid #E2E8F0; border-radius: 8px;
+                          font-weight: 600; font-size: 13px; }
+            QPushButton:hover { background-color: #E2E8F0; color: #1E293B; }
+        """)
+
+        confirm_btn = QPushButton("删除选中的空文件夹")
+        confirm_btn.setFixedHeight(36)
+        confirm_btn.setCursor(Qt.PointingHandCursor)
+        confirm_btn.clicked.connect(self.accept)
+        confirm_btn.setStyleSheet("""
+            QPushButton { background-color: #0F172A; color: white;
+                          border-radius: 8px; border: none;
+                          font-weight: 600; font-size: 13px;
+                          letter-spacing: 1px; }
+            QPushButton:hover { background-color: #1E293B; }
+        """)
+
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(confirm_btn)
+        layout.addLayout(btn_layout)
+
+        # 对话框整体样式
+        self.setStyleSheet("QDialog { background-color: #FFFFFF; }")
+
+    def _select_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Checked)
+
+    def _deselect_all(self):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.Unchecked)
+
+    def get_selected_dirs(self):
+        """返回用户勾选的文件夹路径列表"""
+        selected = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                selected.append(Path(item.data(Qt.UserRole)))
+        return selected
+
 
 # ---------------------------------------------------------
 # 主窗口：UI 界面 (PyQt5)
@@ -420,6 +627,35 @@ class ZDEMArchiverWindow(QMainWindow):
         self.browse_btn.setEnabled(True)
         self.clean_btn.setStyleSheet("") # 恢复禁用状态样式
         self.files_to_delete_cache = [] # 清空缓存
+
+        # === 空文件夹清理 ===
+        target_dir = self.path_input.text()
+        if target_dir and os.path.exists(target_dir):
+            self.append_log("<br/>[系统] 正在扫描残留空文件夹...")
+            empty_dirs = find_empty_dirs(target_dir)
+
+            if empty_dirs:
+                self.append_log(f"<font color='#F59E0B'>[发现] 检测到 {len(empty_dirs)} 个空文件夹，等待用户确认。</font>")
+                dialog = EmptyFolderDialog(empty_dirs, target_dir, parent=self)
+                if dialog.exec_() == QDialog.Accepted:
+                    selected = dialog.get_selected_dirs()
+                    if selected:
+                        removed = 0
+                        for d in selected:
+                            try:
+                                # 用 rmtree 确保即使有隐藏文件也能删除
+                                if d.exists():
+                                    shutil.rmtree(d)
+                                    removed += 1
+                            except Exception as e:
+                                self.append_log(f"<font color='#F59E0B'>[警告] 无法删除: {d.name} ({e})</font>")
+                        self.append_log(f"<font color='#10B981'><b>[成功] 已清理 {removed} 个空文件夹。</b></font>")
+                    else:
+                        self.append_log("[系统] 未选中任何空文件夹，已跳过。")
+                else:
+                    self.append_log("[系统] 用户跳过空文件夹清理。")
+            else:
+                self.append_log("<font color='#10B981'>[系统] 未发现残留空文件夹，目录结构整洁。</font>")
 
     # ---------------- UI 样式定义 (学术高级感) ----------------
     def apply_stylesheet(self):
