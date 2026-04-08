@@ -4,17 +4,18 @@ import sys
 import time
 import shutil
 from pathlib import Path
+from typing import Optional, Any, Union, cast
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QTextBrowser, QProgressBar, QCheckBox, QFileDialog,
+                             QTextBrowser, QProgressBar, QFileDialog,
                              QDialog, QListWidget, QListWidgetItem, QAbstractItemView)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5 import QtCore, QtGui
 
 # ---------------------------------------------------------
 # 实用工具函数：字节转换
 # ---------------------------------------------------------
-def format_size(size_in_bytes):
+def format_size(size_in_bytes: float) -> str:
     """将字节数转换为人类可读的格式 (KB, MB, GB)"""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size_in_bytes < 1024.0:
@@ -25,7 +26,7 @@ def format_size(size_in_bytes):
 # ---------------------------------------------------------
 # 核心逻辑：文件过滤规则
 # ---------------------------------------------------------
-def should_delete_file(file_path, base_path):
+def should_delete_file(file_path: Path, base_path: Path) -> Optional[str]:
     """
     判断单个文件是否需要被删除。
     返回命中的规则名称 (str) 或 None (不删除)。
@@ -105,7 +106,6 @@ def should_delete_file(file_path, base_path):
 
         # [6] 默认处理：如果都不匹配，为了安全起见，默认保留
         return None
-
     except Exception:
         # 如果解析路径发生异常，保守起见不删除
         return None
@@ -113,21 +113,21 @@ def should_delete_file(file_path, base_path):
 # ---------------------------------------------------------
 # 线程 1：扫描预演线程 (Dry-run Scanner)
 # ---------------------------------------------------------
-class ScannerThread(QThread):
-    progress_update = pyqtSignal(int)
-    log_update = pyqtSignal(str)
-    scan_finished = pyqtSignal(object) # 传递结果字典  [用 object 避免 int32 溢出]
+class ScannerThread(QThread): # type: ignore
+    progress_update: pyqtSignal = pyqtSignal(int) # type: ignore
+    log_update: pyqtSignal = pyqtSignal(str) # type: ignore
+    scan_finished: pyqtSignal = pyqtSignal(object) # type: ignore
 
-    def __init__(self, target_dir):
+    def __init__(self, target_dir: Union[str, Path]) -> None:
         super().__init__()
-        self.target_dir = Path(target_dir)
+        self.target_dir: Path = Path(target_dir)
 
-    def run(self):
+    def run(self) -> None:
         self.log_update.emit("[系统] 正在初始化扫描环境...")
         
         # 第一遍：快速统计文件总数，用于计算精确进度条
         self.log_update.emit("[系统] 正在评估目录规模...")
-        total_files = sum(len(files) for _, _, files in os.walk(self.target_dir))
+        total_files = sum(len(files_list) for _, _, files_list in os.walk(self.target_dir))
         
         if total_files == 0:
             self.log_update.emit("[警告] 目标目录为空或不存在。")
@@ -150,26 +150,30 @@ class ScannerThread(QThread):
         last_update_time = time.time()
 
         # 第二遍：执行匹配逻辑
-        for root, _, files in os.walk(self.target_dir):
+        for root, _, files_list in os.walk(self.target_dir):
             root_path = Path(root)
-            for file in files:
+            for file in files_list:
                 file_path = root_path / file
                 processed_files += 1
 
                 # 规则判断：返回规则名或 None
                 rule = should_delete_file(file_path, self.target_dir)
                 if rule:
-                    files_to_delete.append(file_path)
                     try:
                         fsize = file_path.stat().st_size
                     except OSError:
                         fsize = 0
+                    
+                    # 存储 (路径, 大小, 规则)
+                    files_to_delete.append((file_path, fsize, rule))
+                    
                     total_freed_bytes += fsize
                     # 按规则名累加统计
                     if rule not in rule_stats:
-                        rule_stats[rule] = {'count': 0, 'bytes': 0}
-                    rule_stats[rule]['count'] += 1
-                    rule_stats[rule]['bytes'] += fsize
+                        rule_stats[rule] = {'count': 1, 'bytes': fsize}
+                    else:
+                        rule_stats[rule]['count'] += 1
+                        rule_stats[rule]['bytes'] += fsize
 
                 # 控制进度条更新频率 (每 0.1 秒刷新一次)
                 current_time = time.time()
@@ -188,17 +192,18 @@ class ScannerThread(QThread):
 # ---------------------------------------------------------
 # 线程 2：物理清理线程 (Cleaner)
 # ---------------------------------------------------------
-class CleanerThread(QThread):
-    progress_update = pyqtSignal(int)
-    log_update = pyqtSignal(str)
-    clean_finished = pyqtSignal(object, object) # 返回 (成功删除数, 失败数)  [用 object 避免 int32 溢出]
+class CleanerThread(QThread): # type: ignore
+    progress_update: pyqtSignal = pyqtSignal(int) # type: ignore
+    log_update: pyqtSignal = pyqtSignal(str) # type: ignore
+    clean_finished: pyqtSignal = pyqtSignal(object, object) # type: ignore
 
-    def __init__(self, files_to_delete, target_dir):
+    def __init__(self, files_to_delete: list[tuple[Path, float, str]], target_dir: Union[str, Path]) -> None:
         super().__init__()
-        self.files_to_delete = files_to_delete
-        self.target_dir = Path(target_dir)
+        self.files_to_delete: list[tuple[Path, float, str]] = files_to_delete
+        self.target_dir: Path = Path(target_dir)
+        self.is_interrupted: bool = False
 
-    def run(self):
+    def run(self) -> None:
         total_tasks = len(self.files_to_delete)
         if total_tasks == 0:
             self.clean_finished.emit(0, 0)
@@ -208,19 +213,32 @@ class CleanerThread(QThread):
         fail_count = 0
         last_update_time = time.time()
 
-        for i, file_path in enumerate(self.files_to_delete):
+        for i, item in enumerate(self.files_to_delete):
+            if self.is_interrupted:
+                break
+            
+            # --- 类型安全转换逻辑 ---
+            # 无论 item 是 (path, size, rule) 还是单独的 path，都提取出真正的路径对象
+            file_path: Optional[Path] = None
             try:
-                # 核心：物理删除文件
-                os.remove(file_path)
-                success_count += 1
+                if isinstance(item, (list, tuple)) and len(item) > 0:
+                    potential_path = item[0]
+                else:
+                    potential_path = item
+                
+                # 统一转为 Path 确保拥有 .exists() 和 .name 属性
+                file_path = Path(str(potential_path))
+                
+                if file_path.exists():
+                    os.remove(file_path)
+                    success_count += 1
             except PermissionError:
-                # 异常捕获：文件被占用
-                self.log_update.emit(f"<font color='#F59E0B'>[警告] 权限拒绝或文件被占用，已跳过: {file_path.name}</font>")
-                fail_count += 1
-            except FileNotFoundError:
+                f_name = file_path.name if file_path else "未知文件"
+                self.log_update.emit(f"<font color='#F59E0B'>[权限拒绝] 已跳过: {f_name}</font>")
                 fail_count += 1
             except Exception as e:
-                self.log_update.emit(f"<font color='#F59E0B'>[警告] 删除失败 ({str(e)}): {file_path.name}</font>")
+                f_name = file_path.name if file_path else "错误项"
+                self.log_update.emit(f"<font color='#F59E0B'>[删除失败] {f_name}: {str(e)}</font>")
                 fail_count += 1
 
             # 控制进度条更新频率
@@ -238,7 +256,7 @@ class CleanerThread(QThread):
             # 精确匹配：IDE/编译缓存目录名完全一致才清理
             ide_junk_dirs = {'__pycache__', '.idea', '.vscode', '.cursor', '.superdesign'}
             # 采用自下而上的遍历 (topdown=False) 确保能干净地删除嵌套文件夹
-            for root, dirs, files in os.walk(self.target_dir, topdown=False):
+            for root, dirs, _ in os.walk(self.target_dir, topdown=False):
                 for d in dirs:
                     d_lower = d.lower()
                     should_remove = False
@@ -262,30 +280,54 @@ class CleanerThread(QThread):
 # ---------------------------------------------------------
 # 空文件夹扫描工具
 # ---------------------------------------------------------
-def find_empty_dirs(root_path):
+def find_empty_dirs(root_path: Union[str, Path]) -> list[Path]:
     """
-    递归扫描空文件夹（从底部往上扫描）。
-    如果一个目录下既没有文件，子目录也全是空的，则判定为空文件夹。
-    返回空文件夹路径列表，按路径深度降序排列（最深的在前）。
+    深度扫描真正的空文件夹。
+    逻辑：自底向上，确保完全没有任何实体（文件或非空子目录）的目录才被列入。
     """
-    empty_dirs = []
+    empty_dirs: list[Path] = []
     root_path = Path(root_path)
 
-    # 自底向上遍历，确保先发现最深层的空目录
-    for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
+    # 定义极其严格的保护后缀：只要目录包含这些，绝不视为“空”
+    protected_exts = {'.py', '.sh', '.md', '.docx', '.pptx', '.pdf', '.xlsx', '.xls', '.doc', '.caj', '.cdr'}
+
+    for dirpath, _, filenames in os.walk(root_path, topdown=False):
         current = Path(dirpath)
-        # 跳过根目录本身
         if current == root_path:
             continue
-        # 判断是否为空：没有文件，且没有子目录（或子目录都已经被记录为空）
+
+        # 核心防御 1：如果 filenames 里有任何东西，绝对不是空的
+        if filenames:
+            # 进一步检查是否有受保护的资产（双重保险）
+            if any(Path(f).suffix.lower() in protected_exts for f in filenames):
+                continue
+            # 就算是黑名单里的文件还没删干净，也不触发“空文件夹”逻辑，交给主清理流程
+            continue
+
+        # 核心防御 2：使用 os.scandir 检查，确保没有任何隐藏实体
         try:
-            remaining = list(current.iterdir())
-            if not remaining:
+            is_empty = True
+            with os.scandir(current) as it:
+                for entry in it:
+                    # 如果有任何文件，不为空
+                    if entry.is_file():
+                        is_empty = False
+                        break
+                    # 如果有文件夹，但该文件夹没被列入待删的 empty_dirs，说明它还有内容
+                    if entry.is_dir():
+                        if Path(entry.path) not in empty_dirs:
+                            is_empty = False
+                            break
+            
+            if is_empty:
+                # 检查目录名是否在保护列表中（防止破坏某些带结构的空项目）
+                if current.name.lower() in ['important_data', 'keep', 'final_results', '不要删']:
+                    continue
                 empty_dirs.append(current)
         except (PermissionError, OSError):
-            pass
+            continue
 
-    # 按路径深度降序（最深的排前面，方便从里往外删）
+    # 深度排序
     empty_dirs.sort(key=lambda p: len(p.parts), reverse=True)
     return empty_dirs
 
@@ -295,35 +337,36 @@ def find_empty_dirs(root_path):
 # ---------------------------------------------------------
 class EmptyFolderDialog(QDialog):
     """可勾选的空文件夹列表对话框"""
+    list_widget: QListWidget
 
-    def __init__(self, empty_dirs, base_path, parent=None):
+    def __init__(self, empty_dirs: list[Path], base_path: Union[str, Path], parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.empty_dirs = empty_dirs
-        self.base_path = Path(base_path)
+        self.empty_dirs: list[Path] = empty_dirs
+        self.base_path: Path = Path(base_path)
         self.setWindowTitle('空文件夹清理')
         self.resize(600, 420)
         self.initUI()
 
-    def initUI(self):
+    def initUI(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(14)
 
         # 标题
         title = QLabel(f"发现 {len(self.empty_dirs)} 个空文件夹")
-        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title.setFont(QtGui.QFont("Segoe UI", 12, QtGui.QFont.Bold)) # type: ignore
         title.setStyleSheet("color: #1E293B;")
         layout.addWidget(title)
 
         hint = QLabel("勾选你需要删除的空文件夹，取消勾选的将被保留：")
-        hint.setFont(QFont("Segoe UI", 9))
+        hint.setFont(QtGui.QFont("Segoe UI", 9)) # type: ignore
         hint.setStyleSheet("color: #64748B;")
         layout.addWidget(hint)
 
         # 可勾选列表
         self.list_widget = QListWidget()
-        self.list_widget.setFont(QFont("Consolas", 9))
-        self.list_widget.setSelectionMode(QAbstractItemView.NoSelection)
+        self.list_widget.setFont(QtGui.QFont("Consolas", 9)) # type: ignore
+        self.list_widget.setSelectionMode(QAbstractItemView.NoSelection) # type: ignore
         self.list_widget.setStyleSheet("""
             QListWidget {
                 background-color: #F8FAFC;
@@ -342,10 +385,18 @@ class EmptyFolderDialog(QDialog):
                 rel = d.relative_to(self.base_path)
             except ValueError:
                 rel = d
-            item = QListWidgetItem(str(rel))
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)  # 默认全选
-            item.setData(Qt.UserRole, str(d))  # 存储绝对路径
+            # 改进显示：如果路径太深，只取最后几段，并把完整路径显示在鼠标悬停提示中
+            full_rel_str = str(rel)
+            if len(full_rel_str) > 75:
+                display_str = "..." + full_rel_str[-72:]
+            else:
+                display_str = full_rel_str
+
+            item = QListWidgetItem(display_str)
+            item.setToolTip(f"完整路径: {d}")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable) # type: ignore
+            item.setCheckState(Qt.Checked) # type: ignore
+            item.setData(Qt.UserRole, str(d)) # type: ignore
             self.list_widget.addItem(item)
 
         layout.addWidget(self.list_widget)
@@ -354,7 +405,7 @@ class EmptyFolderDialog(QDialog):
         select_layout = QHBoxLayout()
         select_all_btn = QPushButton("全选")
         select_all_btn.setFixedSize(70, 28)
-        select_all_btn.setCursor(Qt.PointingHandCursor)
+        select_all_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         select_all_btn.clicked.connect(self._select_all)
         select_all_btn.setStyleSheet("""
             QPushButton { background-color: #F1F5F9; color: #475569;
@@ -365,7 +416,7 @@ class EmptyFolderDialog(QDialog):
 
         deselect_all_btn = QPushButton("全不选")
         deselect_all_btn.setFixedSize(70, 28)
-        deselect_all_btn.setCursor(Qt.PointingHandCursor)
+        deselect_all_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         deselect_all_btn.clicked.connect(self._deselect_all)
         deselect_all_btn.setStyleSheet(select_all_btn.styleSheet())
 
@@ -380,7 +431,7 @@ class EmptyFolderDialog(QDialog):
 
         cancel_btn = QPushButton("跳过")
         cancel_btn.setFixedHeight(36)
-        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         cancel_btn.clicked.connect(self.reject)
         cancel_btn.setStyleSheet("""
             QPushButton { background-color: #F1F5F9; color: #475569;
@@ -391,7 +442,7 @@ class EmptyFolderDialog(QDialog):
 
         confirm_btn = QPushButton("删除选中的空文件夹")
         confirm_btn.setFixedHeight(36)
-        confirm_btn.setCursor(Qt.PointingHandCursor)
+        confirm_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         confirm_btn.clicked.connect(self.accept)
         confirm_btn.setStyleSheet("""
             QPushButton { background-color: #0F172A; color: white;
@@ -408,21 +459,25 @@ class EmptyFolderDialog(QDialog):
         # 对话框整体样式
         self.setStyleSheet("QDialog { background-color: #FFFFFF; }")
 
-    def _select_all(self):
-        for i in range(self.list_widget.count()):
-            self.list_widget.item(i).setCheckState(Qt.Checked)
-
-    def _deselect_all(self):
-        for i in range(self.list_widget.count()):
-            self.list_widget.item(i).setCheckState(Qt.Unchecked)
-
-    def get_selected_dirs(self):
-        """返回用户勾选的文件夹路径列表"""
-        selected = []
+    def _select_all(self) -> None:
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                selected.append(Path(item.data(Qt.UserRole)))
+            if item:
+                item.setCheckState(Qt.Checked) # type: ignore
+
+    def _deselect_all(self) -> None:
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item:
+                item.setCheckState(Qt.Unchecked) # type: ignore
+
+    def get_selected_dirs(self) -> list[Path]:
+        """返回用户勾选的文件夹路径列表"""
+        selected: list[Path] = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item and item.checkState() == Qt.Checked: # type: ignore
+                selected.append(Path(str(item.data(Qt.UserRole)))) # type: ignore
         return selected
 
 
@@ -430,19 +485,31 @@ class EmptyFolderDialog(QDialog):
 # 主窗口：UI 界面 (PyQt5)
 # ---------------------------------------------------------
 class ZDEMArchiverWindow(QMainWindow):
-    def __init__(self):
+    path_input: QLineEdit
+    browse_btn: QPushButton
+    log_browser: QTextBrowser
+    clear_log_btn: QPushButton
+    progress_bar: QProgressBar
+    dry_run_btn: QPushButton
+    clean_btn: QPushButton
+    scanner_thread: ScannerThread
+    cleaner_thread: CleanerThread
+
+    def __init__(self) -> None:
         super().__init__()
-        self.files_to_delete_cache = [] # 缓存预演生成的待删除列表
+        self.files_to_delete_cache: list[tuple[Path, float, str]] = [] # 缓存预演生成的待删除列表
         self.initUI()
 
-    def initUI(self):
+    def initUI(self) -> None:
         self.setWindowTitle('ZDEM Archiver | 归档清理工具')
         self.resize(720, 560)
         
         # 居中显示
-        screen = QApplication.primaryScreen().geometry()
-        size = self.geometry()
-        self.move((screen.width() - size.width()) // 2, (screen.height() - size.height()) // 2)
+        primary_screen = QApplication.primaryScreen()
+        if primary_screen:
+            screen_geo = primary_screen.geometry()
+            size = self.geometry()
+            self.move((screen_geo.width() - size.width()) // 2, (screen_geo.height() - size.height()) // 2)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -454,7 +521,7 @@ class ZDEMArchiverWindow(QMainWindow):
         # 1. 顶部：路径选择
         path_layout = QHBoxLayout()
         path_label = QLabel("项目路径:")
-        path_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        path_label.setFont(QtGui.QFont("Segoe UI", 10, QtGui.QFont.Bold)) # type: ignore
         
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("请选择 ZDEM 项目文件夹...")
@@ -464,7 +531,7 @@ class ZDEMArchiverWindow(QMainWindow):
         self.browse_btn = QPushButton("浏览...")
         self.browse_btn.setObjectName("browse_btn")
         self.browse_btn.setFixedSize(85, 36)
-        self.browse_btn.setCursor(Qt.PointingHandCursor)
+        self.browse_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         self.browse_btn.clicked.connect(self.browse_folder)
         
         path_layout.addWidget(path_label)
@@ -475,11 +542,11 @@ class ZDEMArchiverWindow(QMainWindow):
         # 2. 中部：日志区域 (带标题和清空按钮)
         log_header_layout = QHBoxLayout()
         log_label = QLabel("执行日志:")
-        log_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        log_label.setFont(QtGui.QFont("Segoe UI", 10, QtGui.QFont.Bold)) # type: ignore
         
         self.clear_log_btn = QPushButton("清空日志")
         self.clear_log_btn.setFixedSize(70, 26)
-        self.clear_log_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_log_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         self.clear_log_btn.clicked.connect(self.clear_logs)
         
         log_header_layout.addWidget(log_label)
@@ -488,7 +555,7 @@ class ZDEMArchiverWindow(QMainWindow):
         layout.addLayout(log_header_layout)
 
         self.log_browser = QTextBrowser()
-        self.log_browser.setFont(QFont("Consolas", 10))
+        self.log_browser.setFont(QtGui.QFont("Consolas", 10)) # type: ignore
         layout.addWidget(self.log_browser)
         self.append_log("ZDEM Archiver 归档清理核心已就绪。")
         self.append_log("等待指定目标路径。点击 [扫描预演] 开始安全检索。")
@@ -506,7 +573,7 @@ class ZDEMArchiverWindow(QMainWindow):
         
         self.dry_run_btn = QPushButton("扫描预演")
         self.dry_run_btn.setFixedHeight(42)
-        self.dry_run_btn.setCursor(Qt.PointingHandCursor)
+        self.dry_run_btn.setCursor(Qt.PointingHandCursor) # type: ignore
         self.dry_run_btn.clicked.connect(self.start_dry_run)
         
         self.clean_btn = QPushButton("一键清理")
@@ -520,7 +587,7 @@ class ZDEMArchiverWindow(QMainWindow):
 
         self.apply_stylesheet()
 
-    def browse_folder(self):
+    def browse_folder(self) -> None:
         folder_path = QFileDialog.getExistingDirectory(self, "选择 ZDEM 项目文件夹")
         if folder_path:
             self.path_input.setText(folder_path)
@@ -528,16 +595,16 @@ class ZDEMArchiverWindow(QMainWindow):
             self.clean_btn.setStyleSheet("")
             self.progress_bar.setValue(0)
 
-    def append_log(self, text):
+    def append_log(self, text: str) -> None:
         """线程安全的日志添加，并自动滚动到底部"""
         self.log_browser.append(text)
-        self.log_browser.moveCursor(QTextCursor.End)
+        self.log_browser.moveCursor(QtGui.QTextCursor.End) # type: ignore
 
-    def clear_logs(self):
+    def clear_logs(self) -> None:
         self.log_browser.clear()
         self.append_log("[系统] 日志已清空，等待新指令。")
 
-    def start_dry_run(self):
+    def start_dry_run(self) -> None:
         target_dir = self.path_input.text()
         if not target_dir or not os.path.exists(target_dir):
             self.append_log("<font color='#EF4444'>[错误] 请先选择有效的项目路径！</font>")
@@ -557,49 +624,100 @@ class ZDEMArchiverWindow(QMainWindow):
         self.scanner_thread.scan_finished.connect(self.on_scan_finished)
         self.scanner_thread.start()
 
-    def on_scan_finished(self, result):
-        files_to_delete = result['files_to_delete']
-        total_freed_bytes = result['total_freed_bytes']
-        rule_stats = result['rule_stats']
+    def on_scan_finished(self, result: dict[str, object]) -> None:
+        files_to_delete: list[tuple[Path, float, str]] = cast(list, result['files_to_delete']) # type: ignore
+        total_freed_bytes: float = cast(float, result['total_freed_bytes'])
+        rule_stats: dict[str, dict[str, Any]] = cast(dict, result['rule_stats']) # type: ignore
 
+        # 缓存扫描结果供正式清理使用
         self.files_to_delete_cache = files_to_delete
         
-        self.append_log("━" * 50)
-        self.append_log("<b>预演结果汇总：</b>")
-        self.append_log("")
-
-        # 按规则分类汇总展示
-        if rule_stats:
-            # 按字节数降序排列，最占空间的规则排在最前面
-            sorted_rules = sorted(rule_stats.items(), key=lambda x: x[1]['bytes'], reverse=True)
-            for rule_name, stats in sorted_rules:
-                count = stats['count']
-                size_str = format_size(stats['bytes'])
-                self.append_log(
-                    f"  <font color='#60A5FA'>▸</font> "
-                    f"<b>{rule_name}</b>　→　"
-                    f"{count} 个文件　|　"
-                    f"<font color='#F87171'>{size_str}</font>"
-                )
-
-        self.append_log("")
-        self.append_log(
-            f"  <b>总计: {len(files_to_delete)} 个文件　|　"
-            f"释放 <font color='#10B981'>{format_size(total_freed_bytes)}</font></b>"
-        )
+        self.append_log("<br/>" + "━" * 50)
+        self.append_log("<font color='#1E293B' size='4'><b>🔍 预演预警：详细删除清单 (Physical Purge Preview)</b></font>")
         self.append_log("━" * 50)
         
+        if not files_to_delete:
+            self.append_log("<font color='#10B981'><b>[通知] 目录状态良好，未发现符合清理规则的冗余文件。</b></font>")
+            self.dry_run_btn.setEnabled(True)
+            self.browse_btn.setEnabled(True)
+            return
+
+        # --- 1. 按规则分类展示文件的详细路径 ---
+        self.append_log("<b>[详细路径审查 - 仅显示部分代表项]:</b>")
+        
+        # 按规则对文件进行分组展示
+        grouped_files: dict[str, list[tuple[Path, float]]] = {}
+        target_base = self.path_input.text()
+        
+        for item in files_to_delete:
+            try:
+                if isinstance(item, (list, tuple)) and len(item) >= 3:
+                    fp, sz, rule = Path(str(item[0])), float(item[1]), str(item[2])
+                elif isinstance(item, Path):
+                    fp, sz, rule = item, 0.0, "归档归类项"
+                else:
+                    fp, sz, rule = Path(str(item)), 0.0, "未知属性项"
+            except (IndexError, TypeError, ValueError):
+                fp, sz, rule = Path(str(item)), 0.0, "解析错误项"
+
+            if rule not in grouped_files:
+                grouped_files[rule] = []
+            grouped_files[rule].append((fp, sz))
+            
+        target_base = self.path_input.text()
+        
+        for rule_name in sorted(grouped_files.keys()):
+            items = grouped_files[rule_name]
+            # 根据规则赋予不同颜色以便区分
+            group_color = "#334155" # 缺省
+            if '数据' in rule_name or '结果' in rule_name: group_color = "#2563EB" # 蓝
+            if 'IDE' in rule_name or '缓存' in rule_name: group_color = "#7C3AED" # 紫
+            if 'GIF' in rule_name: group_color = "#BE185D" # 艳红
+            
+            self.append_log(f"<br/><font color='{group_color}'><b>▶ 【{rule_name}】共 {len(items)} 个项:</b></font>")
+            
+            # 显示上限限制，防止日志太多导致 UI 卡顿
+            LIMIT = 300 
+            for i, (fp, sz) in enumerate(items):
+                if i >= LIMIT:
+                    self.append_log(f"   <font color='#94A3B8'><i>... (此项下省略其余 {len(items) - LIMIT} 个同类文件路径)</i></font>")
+                    break
+                try:
+                    rel_path = Path(fp).relative_to(target_base)
+                except:
+                    rel_path = Path(fp).name
+                self.append_log(f"   <font color='#64748B' size='2'>[{format_size(sz)}] {rel_path}</font>")
+
+        # --- 2. 摘要汇总展示 ---
+        self.append_log("<br/>" + "─" * 40)
+        self.append_log("<b>📊 空间释放汇总 (按规则计):</b>")
+        
+        # 排序：按字节数降序
+        sorted_rules = sorted(rule_stats.items(), key=lambda x: x[1]['bytes'], reverse=True)
+        for rule_name, stats in sorted_rules:
+            count = stats['count']
+            size_str = format_size(stats['bytes'])
+            self.append_log(f"  • {rule_name:<12s}: 待删除 <b>{count:>5d}</b> 个，共 <b>{size_str}</b>")
+        
+        self.append_log("─" * 40)
+        final_summary = (
+            f"<font color='#0F172A'><b>总预定释放:</b> "
+            f"<b>{len(files_to_delete)}</b> 文件 / "
+            f"<font color='#EF4444'><b>{format_size(total_freed_bytes)}</b></font></font>"
+        )
+        self.append_log(final_summary)
+        
+        # 风险提示
+        self.append_log("<br/><font color='#EF4444'><b>⚠️ 注意：本清理操作为【物理永久删除】，不进入回收站。</b></font>")
+        self.append_log("<font color='#1E293B'>请确保上述列表中的文件不再需要，确认无误后点击下方 [一键清理]。</font>")
+        self.append_log("━" * 50 + "<br/>")
+
+        self.clean_btn.setEnabled(True)
+        self.clean_btn.setStyleSheet(self.get_active_clean_btn_style())
         self.dry_run_btn.setEnabled(True)
         self.browse_btn.setEnabled(True)
 
-        if len(files_to_delete) > 0:
-            self.append_log("<font color='#F59E0B'>[注意] 确认无误后，点击 [一键清理] 执行物理清除。</font>")
-            self.clean_btn.setEnabled(True)
-            self.clean_btn.setStyleSheet(self.get_active_clean_btn_style())
-        else:
-            self.append_log("[系统] 目标目录已优化，无需清理。")
-
-    def start_clean(self):
+    def start_clean(self) -> None:
         if not self.files_to_delete_cache:
             return
 
@@ -618,10 +736,10 @@ class ZDEMArchiverWindow(QMainWindow):
         self.cleaner_thread.clean_finished.connect(self.on_clean_finished)
         self.cleaner_thread.start()
 
-    def on_clean_finished(self, success_count, fail_count):
-        self.append_log(f"<font color='#10B981'><b>[成功] 数据净化完成。安全移除 {success_count} 个文件及对应 DATA 目录。</b></font>")
+    def on_clean_finished(self, success_count: float, fail_count: float) -> None:
+        self.append_log(f"<font color='#10B981'><b>[成功] 数据净化完成。安全移除 {int(success_count)} 个文件及对应 DATA 目录。</b></font>")
         if fail_count > 0:
-            self.append_log(f"<font color='#F59E0B'>[警告] 另有 {fail_count} 个文件因权限保护被跳过。</font>")
+            self.append_log(f"<font color='#F59E0B'>[警告] 另有 {int(fail_count)} 个文件因权限保护被跳过。</font>")
         
         self.dry_run_btn.setEnabled(True)
         self.browse_btn.setEnabled(True)
@@ -637,7 +755,7 @@ class ZDEMArchiverWindow(QMainWindow):
             if empty_dirs:
                 self.append_log(f"<font color='#F59E0B'>[发现] 检测到 {len(empty_dirs)} 个空文件夹，等待用户确认。</font>")
                 dialog = EmptyFolderDialog(empty_dirs, target_dir, parent=self)
-                if dialog.exec_() == QDialog.Accepted:
+                if dialog.exec_() == QDialog.Accepted: # type: ignore
                     selected = dialog.get_selected_dirs()
                     if selected:
                         removed = 0
@@ -658,7 +776,7 @@ class ZDEMArchiverWindow(QMainWindow):
                 self.append_log("<font color='#10B981'>[系统] 未发现残留空文件夹，目录结构整洁。</font>")
 
     # ---------------- UI 样式定义 (学术高级感) ----------------
-    def apply_stylesheet(self):
+    def apply_stylesheet(self) -> None:
         qss = """
         QMainWindow { 
             background-color: #FFFFFF; 
@@ -723,7 +841,7 @@ class ZDEMArchiverWindow(QMainWindow):
         self.dry_run_btn.setObjectName("dry_run")
         self.clear_log_btn.setObjectName("clear_btn")
 
-    def get_active_clean_btn_style(self):
+    def get_active_clean_btn_style(self) -> str:
         return """
         QPushButton {
             background-color: #BE123C; /* 勃艮第红，克制的高级警示色 */
@@ -738,13 +856,13 @@ class ZDEMArchiverWindow(QMainWindow):
         QPushButton:hover { background-color: #9F1239; }
         """
         
-    def get_blue_progress_style(self):
+    def get_blue_progress_style(self) -> str:
         return """
         QProgressBar { border: none; background-color: #F1F5F9; border-radius: 4px; }
         QProgressBar::chunk { background-color: #0F172A; border-radius: 4px; }
         """
         
-    def get_red_progress_style(self):
+    def get_red_progress_style(self) -> str:
         return """
         QProgressBar { border: none; background-color: #F1F5F9; border-radius: 4px; }
         QProgressBar::chunk { background-color: #BE123C; border-radius: 4px; }
@@ -753,7 +871,7 @@ class ZDEMArchiverWindow(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     # 优先使用 Segoe UI，提供极佳的英文和数字渲染，中文会自动回退到系统优雅字体
-    app.setFont(QFont("Segoe UI", 9))
+    app.setFont(QtGui.QFont("Segoe UI", 9)) # type: ignore
     window = ZDEMArchiverWindow()
     window.show()
     sys.exit(app.exec_())

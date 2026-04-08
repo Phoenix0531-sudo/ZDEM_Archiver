@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['zdem_archiver_main.py'],
+    ['E:\\0.Information\\1.Code Projects\\11.ZDEM_Archiver\\zdem_archiver_main.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['E:\\0.Information\\1.Code Projects\\11.ZDEM_Archiver\\favicon.ico'],
 )
