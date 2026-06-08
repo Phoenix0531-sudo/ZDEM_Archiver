@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "ZDEM Archiver: Data Purge Utility for ZDEM Numerical Simulations"
+authors:
+  - family-names: "Phoenix0531-sudo"
+    given-names: ""
+    orcid: ""
+version: 1.0.0
+date-released: 2026-06-08
+url: "https://github.com/Phoenix0531-sudo/ZDEM_Archiver"
+license: "MIT"
+type: software
+repository-code: "https://github.com/Phoenix0531-sudo/ZDEM_Archiver"
+abstract: "A multi-threaded GUI data archiving and purging utility for Z-Discrete Element Method (ZDEM) numerical simulations. Safely removes redundant output data while preserving core source code and configuration files."
+keywords:
+  - "ZDEM"
+  - "discrete element method"
+  - "data purging"
+  - "numerical simulation"
+  - "file cleanup"
