@@ -13,7 +13,7 @@
 
 ---
 
-## 🎯 项目简介 | Overview
+## 项目简介 | Overview
 
 在运行 ZDEM 离散元数值模拟时，随着迭代步数的增加，项目目录下通常会生成海量的碎片化 Data 文件及冗余计算日志，造成极大的磁盘空间开销。手动清理不仅低效，且极易误删关键源文件。
 
@@ -25,19 +25,19 @@ ZDEM Archiver 是专为此场景开发的本地化 GUI 归档清理工具。它�
 
 ---
 
-## ✨ 技术特性 | Technical Highlights
+## 技术特性 | Technical Highlights
 
 | 特性 | Feature | 说明 |
 |------|---------|------|
-| 🧵 **异步非阻塞 UI** | Async Non-blocking UI | 基于 QThread 的后台扫描与清理线程，处理百万级碎片文件时界面保持流畅 |
-| 🔍 **详细路径预演** | Detailed Path Preview | 物理删除前分类审查所有待删文件，用蓝（数据）/紫（缓存）/红（GIF）醒目标注 |
-| 🛡️ **Fail-safe 容错** | Fail-safe Tolerance | `os.remove` 由 try-except 包裹，遇权限锁定文件自动跳过并告警 |
-| 🧪 **Dry-run 防御** | Dry-run Safeguard | 清理按钮默认禁用，强制用户审查清单与容量后方可执行 |
-| 📂 **空文件夹探测** | Empty Folder Detection | 清理完毕自动递归扫描空目录，内置资产保护算法，仅弹出真正冗余的空文件夹供勾选删除 |
+| **异步非阻塞 UI** | Async Non-blocking UI | 基于 QThread 的后台扫描与清理线程，处理百万级碎片文件时界面保持流畅 |
+| **详细路径预演** | Detailed Path Preview | 物理删除前分类审查所有待删文件，用蓝（数据）/紫（缓存）/红（GIF）醒目标注 |
+| **Fail-safe 容错** | Fail-safe Tolerance | `os.remove` 由 try-except 包裹，遇权限锁定文件自动跳过并告警 |
+| **Dry-run 防御** | Dry-run Safeguard | 清理按钮默认禁用，强制用户审查清单与容量后方可执行 |
+| **空文件夹探测** | Empty Folder Detection | 清理完毕自动递归扫描空目录，内置资产保护算法，仅弹出真正冗余的空文件夹供勾选删除 |
 
 ---
 
-## 🧠 核心清理逻辑 | Data Retention Policy
+## 核心清理逻辑 | Data Retention Policy
 
 > 过滤引擎严格遵循以下规则。所有物理删除操作前，均须经过 Dry-run 预演确认。
 >
@@ -47,21 +47,21 @@ ZDEM Archiver 是专为此场景开发的本地化 GUI 归档清理工具。它�
 
 | 类别 | Category | 规则 Rule |
 |------|----------|-----------|
-| 📄 初始配置文件 | Initial config | `ini_xyr.dat` |
-| 🔧 源码与文档 | Source & docs | `*.py`, `*.sh`, `*.md` |
-| 🗂️ 非过程性数据 | Non-procedural data | 不包含时间步特征的 `.dat` 文件（如 `output.dat`） |
+| 初始配置文件 | Initial config | `ini_xyr.dat` |
+| 源码与文档 | Source & docs | `*.py`, `*.sh`, `*.md` |
+| 非过程性数据 | Non-procedural data | 不包含时间步特征的 `.dat` 文件（如 `output.dat`） |
 
 ### 黑名单 · Blacklist — 强制清除 · Removable
 
 | 类别 | Category | 规则 Rule |
 |------|----------|-----------|
-| 📝 过程性日志 | Log files | `*.log`, `*.err`, `*.error`, `*.out` |
-| ⏱️ 时间步数据流 | Timestep data | 匹配 `_\d+\.dat$` 或 `\d+\.dat$` 的文件 |
-| 🖼️ 模拟结果图 | Result images | 莫尔圆（`mohr*`）、应力-应变曲线（`strain_stress*`）、时间步快照（文件名含 5 位以上数字） |
-| 🎞️ GIF 动画 | GIF animations | 所有 `.gif` 文件 |
-| 📁 DATA 目录池 | DATA folders | 名为 `DATA`（忽略大小写）目录下的所有文件，清理后目录结构由 `shutil.rmtree` 彻底移除 |
-| 🗑️ IDE/系统缓存 | IDE/OS cache | `__pycache__`、`.idea`、`.vscode`、`.cursor`、`.superdesign` 等目录；`Thumbs.db`、`desktop.ini`、`.DS_Store` 等系统缓存 |
-| 🧹 无用编译产物 | Build artifacts | `.pyc`、`.lnk`、`.mdc`、`.css` |
+| 过程性日志 | Log files | `*.log`, `*.err`, `*.error`, `*.out` |
+| 时间步数据流 | Timestep data | 匹配 `_\d+\.dat$` 或 `\d+\.dat$` 的文件 |
+| 模拟结果图 | Result images | 莫尔圆（`mohr*`）、应力-应变曲线（`strain_stress*`）、时间步快照（文件名含 5 位以上数字） |
+| GIF 动画 | GIF animations | 所有 `.gif` 文件 |
+| DATA 目录池 | DATA folders | 名为 `DATA`（忽略大小写）目录下的所有文件，清理后目录结构由 `shutil.rmtree` 彻底移除 |
+| IDE/系统缓存 | IDE/OS cache | `__pycache__`、`.idea`、`.vscode`、`.cursor`、`.superdesign` 等目录；`Thumbs.db`、`desktop.ini`、`.DS_Store` 等系统缓存 |
+| 无用编译产物 | Build artifacts | `.pyc`、`.lnk`、`.mdc`、`.css` |
 
 ### 空文件夹清理 · Post-Purge
 
@@ -71,7 +71,7 @@ ZDEM Archiver 是专为此场景开发的本地化 GUI 归档清理工具。它�
 
 ---
 
-## 📦 获取与使用 | Download & Usage
+## 获取与使用 | Download & Usage
 
 为方便课题组使用，本项目提供预编译独立可执行文件（`.exe`），**无需安装 Python 或任何依赖**。
 
@@ -86,7 +86,7 @@ ZDEM Archiver 是专为此场景开发的本地化 GUI 归档清理工具。它�
 
 ---
 
-## 🔧 开发者指南 | Developer Guide
+## 开发者指南 | Developer Guide
 
 > 从源码编译前，请务必创建纯净的隔离环境，避免生成的 `.exe` 因重型科学计算库而过度膨胀。
 >
@@ -106,7 +106,7 @@ pyinstaller --onefile --noconsole zdem_archiver_main.py
 
 ---
 
-## 📖 引用 | Citation
+## 引用 | Citation
 
 If you use ZDEM Archiver in your research, please cite it as:
 
@@ -125,7 +125,7 @@ A `CITATION.cff` file is included in the repository for automated citation via G
 
 ---
 
-## 📄 许可证 | License
+## 许可证 | License
 
 This project is open-sourced under the **MIT License**. See [LICENSE](LICENSE) for details.
 
@@ -133,6 +133,6 @@ This project is open-sourced under the **MIT License**. See [LICENSE](LICENSE) f
 
 <div align="center">
 
-**Made with ❤️ for the ZDEM research community**
+**Made for the ZDEM research community**
 
 </div>
