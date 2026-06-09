@@ -125,6 +125,22 @@ A `CITATION.cff` file is included in the repository for automated citation via G
 
 ---
 
+## Docker 使用 | Docker Usage
+
+ZDEM Archiver 是 PyQt5 桌面 GUI 应用，Docker 环境主要用于**构建验证和依赖安装测试**，不适合作为主要的 GUI 运行方式。
+
+> ZDEM Archiver is a PyQt5 desktop GUI application. The Docker environment is intended for **build verification and dependency testing only** — it is not suitable for running the GUI.
+
+```bash
+# 构建镜像
+docker build -t zdem-archiver .
+
+# 验证导入
+docker run --rm zdem-archiver
+```
+
+---
+
 ## 许可证 | License
 
 This project is open-sourced under the **MIT License**. See [LICENSE](LICENSE) for details.
