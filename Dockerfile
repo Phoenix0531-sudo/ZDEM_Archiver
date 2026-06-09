@@ -4,11 +4,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
-    libegl1-mesa \
+    libgl1 \
+    libegl1 \
     libxkbcommon-x11-0 \
     libdbus-1-3 \
-    libxcb-cursor0 \
+    libxcb-cursor0 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
