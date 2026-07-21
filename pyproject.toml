@@ -1,0 +1,25 @@
+[project]
+name = "zdem-archiver"
+version = "0.1.0"
+description = "面向 ZDEM 数值模拟结果的安全归档与清理工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Phoenix0531-sudo" }]
+dependencies = [
+    "PyQt5>=5.15"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
