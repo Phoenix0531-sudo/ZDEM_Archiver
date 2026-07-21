@@ -2,6 +2,12 @@
 
 # ZDEM Archiver · 数据归档清理工具
 
+**Safe data purge utility for ZDEM numerical simulations**
+
+[English](README.md) | [中文](README.zh-CN.md)
+
+![CI](https://github.com/Phoenix0531-sudo/ZDEM_Archiver/actions/workflows/ci.yml/badge.svg)
+
 **Data Purge Utility for Z-Discrete Element Method (ZDEM) Simulations**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
