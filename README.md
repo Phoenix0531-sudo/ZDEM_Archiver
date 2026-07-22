@@ -1,66 +1,28 @@
 # ZDEM Archiver
 
-**Safe archive and cleanup helpers for bulky ZDEM simulation dumps.**
+**Policy-friendly archive and cleanup helpers for bulky ZDEM simulation dumps.**
 
 [English](README.md) | [中文](README.zh-CN.md)
 
 [![CI](https://github.com/Phoenix0531-sudo/ZDEM_Archiver/actions/workflows/ci.yml/badge.svg)](https://github.com/Phoenix0531-sudo/ZDEM_Archiver/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Reclaim disk with policy, not guesswork.
+Long DEM campaigns fill disks with raw frames. This utility helps **classify keep vs reclaimable** data and run archive/purge flows with dry-run discipline — not a blind `rm -rf`.
 
 ## Preview
 
 ![ZDEM Archiver](docs/screenshots/preview.png)
 
-## Features
-
-- Archive / purge helpers for DEM dumps
-- Policy-friendly cleanup conventions
-- CI + tests
-
-## Get started
-
-### Install
+## Install / run
 
 ```bash
 git clone https://github.com/Phoenix0531-sudo/ZDEM_Archiver.git
 cd ZDEM_Archiver
 pip install -r requirements.txt
-```
-
-### Usage
-
-```bash
+# project entry modules — always dry-run on precious campaigns first
 pytest tests/
 ```
 
-## Project layout
-
-```
-# archiver modules
-tests/
-```
-
-## Related ZDEM tools
-
-| Repo | Role |
-|------|------|
-| [ZDEM_ParticleTracker](https://github.com/Phoenix0531-sudo/ZDEM_ParticleTracker) | Interactive particle tracking + true-radius render |
-| [ZDEM_Salt_Kinematics](https://github.com/Phoenix0531-sudo/ZDEM_Salt_Kinematics) | Salt geometry / kinematics extraction and plots |
-| [ZDEM_Area_Conservation](https://github.com/Phoenix0531-sudo/ZDEM_Area_Conservation) | Area-conservation / triangulation analysis |
-| [ZDEM_Bond_Fracture](https://github.com/Phoenix0531-sudo/ZDEM_Bond_Fracture) | Bond damage series + visualizer |
-| [ZDEM_Damage_Thresholds](https://github.com/Phoenix0531-sudo/ZDEM_Damage_Thresholds) | Damage thresholds and energy plots |
-| [ZDEM_DFN](https://github.com/Phoenix0531-sudo/ZDEM_DFN) | Discrete fracture network generator |
-| [ZDEM_Model_Editor](https://github.com/Phoenix0531-sudo/ZDEM_Model_Editor) | Model file visual editor |
-| [ZDEM_Archiver](https://github.com/Phoenix0531-sudo/ZDEM_Archiver) | Archive / purge bulky dumps |
-| [ZDEM3D_WEB](https://github.com/Phoenix0531-sudo/ZDEM3D_WEB) | CAE cloud UI (Django + React + VTK.js) |
-
-
-## Notes
-
-Always dry-run on precious campaign data first.
-
 ## License
 
-MIT. Free for commercial use with attribution where applicable. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
